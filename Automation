@@ -1,0 +1,343 @@
+# 🔧 Security Automation Labs
+
+> Hands-on automation scripts built for real-world security and systems operations — covering Linux system hardening, log hygiene, and active reconnaissance workflows.
+
+---
+
+## 📁 Lab Index
+
+| # | Lab | Stack | Domain |
+|---|-----|-------|--------|
+| 01 | [System Maintenance Automation](#-lab-01--linux-system-maintenance-script) | Bash | Blue Team / SysOps |
+| 02 | [Subdomain Enumeration & Live Checker](#-lab-02--subdomain-enumeration--live-checker) | Python 3 | Recon / OSINT |
+
+---
+
+## 🛠 Lab 01 — Linux System Maintenance Script
+
+**`system_maintenance.sh`** &nbsp;|&nbsp; `Bash` &nbsp;|&nbsp; Blue Team / SysOps
+
+> Automated Linux maintenance routine covering disk auditing, log lifecycle management, file organization, and temp cleanup — all with timestamped audit logging.
+
+### What It Does
+
+| Task | Description | ATT&CK Relevance |
+|------|-------------|-----------------|
+| 🗂 Disk Usage Audit | Captures `df -h` snapshot to log | Baseline for anomaly detection |
+| 🧹 Log Rotation Cleanup | Deletes `/var/log/*.log` files older than 7 days | Prevents log flooding — mitigates T1070.002 |
+| 📁 File Organization | Moves `.txt` / `.log` files from `$HOME` → `~/organized_files/` | Reduces attack surface from stray artifacts |
+| 🗑 Temp File Cleanup | Purges files in `/tmp` and `~/tmp` not accessed in 24h+ | Reduces persistence dwell paths (T1074.001) |
+| 📋 Audit Logging | All actions timestamped to `~/script_log.txt` | Non-repudiation / accountability trail |
+
+### Script
+
+```bash
+#!/bin/bash
+# Script: system_maintenance.sh
+# Purpose: System hygiene — disk check, log cleanup, file org, temp purge
+# Author: Squad 2 | October 2025
+
+LOG_FILE="/home/$USER/script_log.txt"
+BACKUP_DIR="/home/$USER/backup"
+ORGANIZE_DIR="/home/$USER/organized_files"
+TEMP_DIRS=("/tmp" "$HOME/tmp")
+FILE_TYPES=("*.txt" "*.log")
+
+log_action() {
+  echo "$(date): $1" >> "$LOG_FILE"
+}
+
+echo "=== System Maintenance Script Started ===" > "$LOG_FILE"
+log_action "Script execution started."
+
+# ── 1. Disk Usage ─────────────────────────────────────────────────────────────
+echo "Checking disk usage..."
+df -h >> "$LOG_FILE"
+
+# ── 2. Delete logs older than 7 days ──────────────────────────────────────────
+echo "Deleting log files older than 7 days..."
+find /var/log -type f -name "*.log" -mtime +7 -delete 2>/dev/null
+[ $? -eq 0 ] && log_action "Old log files deleted." || log_action "Warning: some deletions failed."
+
+# ── 3. Organize .txt and .log files ───────────────────────────────────────────
+mkdir -p "$ORGANIZE_DIR"
+for file_type in "${FILE_TYPES[@]}"; do
+  find "$HOME" -type f -name "$file_type" ! -path "$ORGANIZE_DIR/*" \
+    -exec mv {} "$ORGANIZE_DIR" \; 2>/dev/null
+done
+log_action "File organization complete."
+
+# ── 4. Temp file cleanup ───────────────────────────────────────────────────────
+for temp_dir in "${TEMP_DIRS[@]}"; do
+  [ -d "$temp_dir" ] && find "$temp_dir" -type f -atime +1 -delete 2>/dev/null
+  log_action "Cleaned $temp_dir"
+done
+
+log_action "Script execution completed."
+echo "=== System Maintenance Script Ended ===" >> "$LOG_FILE"
+```
+
+### Usage
+
+```bash
+# Make executable and run
+chmod +x system_maintenance.sh
+./system_maintenance.sh
+
+# Inspect the audit log
+cat ~/script_log.txt
+```
+
+### Schedule with Cron (Daily at 2 AM)
+
+```bash
+crontab -e
+# Add:
+0 2 * * * /home/$USER/system_maintenance.sh >> /home/$USER/cron.log 2>&1
+```
+
+### Security Notes
+
+- Error redirection (`2>/dev/null`) prevents verbose failure output that could leak path info
+- Conditional `[ -d ]` checks prevent blind execution against non-existent paths
+- Audit log provides accountability trail aligned with **NIST CSF DE.CM-3**
+- Mitigates residual artifact risk mapped to **MITRE ATT&CK T1074.001** (Local Data Staging)
+
+### MITRE ATT&CK Coverage
+
+```
+Tactic: Defense Evasion
+  └─ T1070.002 — Indicator Removal: Clear Linux/Mac System Logs  [MITIGATED]
+
+Tactic: Collection
+  └─ T1074.001 — Data Staged: Local Data Staging  [SURFACE REDUCED]
+```
+
+### Screenshots
+
+> 📸 *Screenshots to be added — disk usage output, organized_files directory, and script_log.txt tail*
+
+---
+
+## 🔎 Lab 02 — Subdomain Enumeration & Live Checker
+
+**`subdomain_enum.py`** &nbsp;|&nbsp; `Python 3` &nbsp;|&nbsp; Recon / OSINT
+
+> Automated recon pipeline wrapping `subfinder` + `httpx` to enumerate subdomains and probe live hosts — structured for bug bounty, external attack surface mapping, and red team pre-engagement recon.
+
+### What It Does
+
+```
+Target Domain
+     │
+     ▼
+┌─────────────┐     ┌───────────────────────┐
+│  subfinder  │────▶│  <domain>.txt         │  All discovered subdomains
+└─────────────┘     └───────────────────────┘
+                                │
+                                ▼
+                    ┌─────────────────────────┐     ┌───────────────────────────┐
+                    │        httpx            │────▶│  <domain>_live.txt        │  Live hosts + status codes
+                    └─────────────────────────┘     └───────────────────────────┘
+```
+
+### Script
+
+```python
+#!/usr/bin/env python3
+"""
+Subdomain Enumeration and Live Checker
+Uses subfinder and httpx to discover live subdomains for a given domain.
+
+Dependencies:
+  - subfinder  → https://github.com/projectdiscovery/subfinder
+  - httpx      → https://github.com/projectdiscovery/httpx
+  - Python 3.7+
+
+Usage:
+  python3 subdomain_enum.py example.com
+  python3 subdomain_enum.py example.com --all all_subs.txt --live live_subs.txt
+"""
+import subprocess, sys, argparse, os, shutil
+from datetime import datetime
+
+def print_progress(message):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"[{timestamp}] {message}")
+
+def check_tool(tool_name):
+    if shutil.which(tool_name) is None:
+        print_progress(f"ERROR: {tool_name} not found. Install it first.")
+        return False
+    return True
+
+def run_subfinder(domain, output_file):
+    print_progress(f"Starting subfinder for: {domain}")
+    try:
+        result = subprocess.run(
+            ["subfinder", "-d", domain, "-silent", "-o", output_file],
+            capture_output=True, text=True, timeout=300
+        )
+        if result.returncode != 0:
+            print_progress(f"subfinder error: {result.stderr}")
+            return False
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            with open(output_file) as f:
+                count = sum(1 for _ in f)
+            print_progress(f"Found {count} unique subdomains.")
+            return True
+        print_progress("No subdomains discovered.")
+        return False
+    except subprocess.TimeoutExpired:
+        print_progress("subfinder timed out (300s).")
+        return False
+
+def run_httpx(input_file, output_file):
+    print_progress("Probing live subdomains with httpx...")
+    try:
+        result = subprocess.run(
+            ["httpx", "-l", input_file, "-silent", "-o", output_file,
+             "-status-code", "-threads", "50"],
+            capture_output=True, text=True, timeout=300
+        )
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            with open(output_file) as f:
+                live_count = sum(1 for _ in f)
+            print_progress(f"Live subdomains found: {live_count}")
+            return True
+        print_progress("No live subdomains detected.")
+        return False
+    except subprocess.TimeoutExpired:
+        print_progress("httpx timed out (300s).")
+        return False
+
+def main():
+    parser = argparse.ArgumentParser(description="Enumerate live subdomains.")
+    parser.add_argument("domain", help="Target domain (e.g., example.com)")
+    parser.add_argument("--all",  help="Output file for all subdomains")
+    parser.add_argument("--live", help="Output file for live subdomains")
+    args = parser.parse_args()
+
+    all_output  = args.all  or f"{args.domain}.txt"
+    live_output = args.live or f"{args.domain}_live.txt"
+
+    print_progress("=== Subdomain Enumeration Tool ===")
+    print_progress(f"Target: {args.domain}")
+
+    if not check_tool("subfinder") or not check_tool("httpx"):
+        sys.exit(1)
+
+    if not run_subfinder(args.domain, all_output):
+        sys.exit(1)
+
+    if os.path.getsize(all_output) == 0:
+        print_progress("No subdomains to probe. Exiting.")
+        sys.exit(0)
+
+    run_httpx(all_output, live_output)
+
+    print_progress("=== Summary ===")
+    with open(all_output) as f:
+        print_progress(f"Total subdomains : {sum(1 for _ in f)}")
+    if os.path.exists(live_output):
+        with open(live_output) as f:
+            print_progress(f"Live subdomains  : {sum(1 for _ in f)}")
+    print_progress("Done.")
+
+if __name__ == "__main__":
+    main()
+```
+
+### Usage
+
+```bash
+# Basic run
+python3 subdomain_enum.py example.com
+
+# Custom output paths
+python3 subdomain_enum.py example.com --all all.txt --live live.txt
+
+# Install dependencies (Go required)
+go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+```
+
+### Output Format
+
+```
+# <domain>.txt — all discovered subdomains
+api.example.com
+mail.example.com
+dev.example.com
+...
+
+# <domain>_live.txt — live hosts with status codes
+https://api.example.com [200]
+https://mail.example.com [301]
+...
+```
+
+### MITRE ATT&CK Coverage
+
+```
+Tactic: Reconnaissance
+  └─ T1590.001 — Gather Victim Network Info: Domain Properties
+  └─ T1596.005 — Search Open Technical Databases: Scan Databases
+
+Tactic: Discovery
+  └─ T1046 — Network Service Discovery  [httpx probing phase]
+```
+
+### Defensive Countermeasures
+
+| Control | Detail |
+|---------|--------|
+| **D3-NTF** (Network Traffic Filtering) | Block or rate-limit passive DNS enumeration from unknown sources |
+| **D3-DNSAL** (DNS Allowlisting) | Restrict zone transfer; monitor for subdomain brute-force patterns |
+| **WAF / CDN masking** | Avoid direct-origin exposure on live subdomains |
+| **Certificate Transparency monitoring** | Alert on new cert issuance for your domain via [crt.sh](https://crt.sh) |
+
+### Screenshots
+
+> 📸 *Screenshots to be added — subfinder output, httpx live check results, final summary*
+
+---
+
+## ⚙️ Environment Setup
+
+```bash
+# Clone this repo
+git clone https://github.com/Seniorcaptain/automation-labs.git
+cd automation-labs
+
+# Lab 01 — no dependencies beyond bash
+chmod +x system_maintenance.sh
+
+# Lab 02 — Python 3.7+ and ProjectDiscovery tools
+pip3 install -r requirements.txt   # (if added)
+go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+```
+
+---
+
+## 📌 Framework Alignment
+
+| Lab | NIST CSF | MITRE ATT&CK |
+|-----|----------|--------------|
+| System Maintenance | DE.CM-3, PR.DS-1, RS.MI-3 | T1070.002, T1074.001 |
+| Subdomain Enum | ID.AM-1, ID.RA-2 | T1590.001, T1596.005, T1046 |
+
+---
+
+## 👤 Author
+
+**Charles Ndirangu**
+Security Architect & Lead SOC Analyst 
+🔗 [GitHub](https://github.com/Seniorcaptain) · [LinkedIn](https://linkedin.com/in/charles-ndirangu)
+
+---
+
+<div align="center">
+  <sub>⚔️ Automate the boring. Hunt the interesting.</sub>
+</div>
